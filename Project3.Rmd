@@ -1,0 +1,710 @@
+---
+title: "Computer Intensive Methods - Project 3"
+output: pdf_document
+header-includes:
+  \usepackage{float}
+  \floatplacement{figure}{H}
+---
+
+```{r setup, include=FALSE, cache=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache=TRUE)
+
+```
+```{r library, include=FALSE, cache=TRUE}
+library(ggplot2)
+library(gridExtra)
+library(cowplot)
+library(datasets)
+library(boot)
+library(bootstrap)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(magrittr)
+library(latex2exp)
+library(Ecdat)
+library(caret)
+library(RColorBrewer)
+library(DAAG)
+```
+```{r chickwts, include=FALSE, cache=TRUE}
+data("chickwts")
+head(chickwts)
+chickwts %<>% data.table()
+summary(chickwts)
+```
+
+```{r q1t1, include=FALSE, cache=TRUE}
+
+# ggplot(chickwts, aes(x=feed, y=weight))+
+#   geom_boxplot()
+# ggplot(chickwts, aes(x= weight, y=weight, color=feed))+
+#   geom_point()
+
+chickwts[, list(Mean=mean(weight),
+                StdDev=sd(weight),
+                Min=min(weight),
+                Max=max(weight),
+                .N), by=feed]
+
+
+# Is there a difference between the chicks weights 
+# across the diet groups?
+
+# 1 -- ANOVA
+# H_0: There is no difference in the mean weights
+# of chicks across the feed groups.
+# H_A: At least one feed group has a different
+# mean weight.
+model.fit <- lm(weight ~ feed, data = chickwts)
+summary(model.fit)
+anova.fit <- anova(model.fit)
+F_stat_observed<- anova.fit$`F value`[1]
+p_val_observed <- anova.fit$`Pr(>F)`[1]
+
+X <- model.matrix(model.fit)
+beta <- coef <- model.fit$coefficients
+res <- model.fit$residuals
+```
+```{r q1t3, include=FALSE, cache=TRUE}
+
+# 3 -- PERMUTATION TEST
+
+inner_f3<- function(data){
+  permuted_data<- data
+  permuted_data$feed <- sample(permuted_data$feed, replace = FALSE)  # Shuffle feed labels
+  anova.fit <- aov(weight ~ feed, data = permuted_data)
+  permuted_F <- summary(anova.fit)[[1]]$`F value`[1]
+  permuted_p<- summary(anova.fit)[[1]]$`Pr(>F)`[1]
+  return(c(`F value`=permuted_F,
+           `p-value`=permuted_p))
+}
+
+permutation_test <- function(data,
+                             N = 1000) {
+  replicate(N, inner_f3(data), simplify = T) %>% t() %>% as.data.frame() -> df
+  p<- (1+sum(df[1]>F_stat_observed))/(N+1)
+    return(list(df=df,
+                `p-value`=p))
+  #p-value 
+  # return(mean(permuted_F >= observed_F))
+}
+
+set.seed(42)
+test <- permutation_test(chickwts)
+p_value_permuationt <- test$`p-value`
+p_value_permuationt
+
+
+
+```
+
+# 1 Chickwts dataset (Question 1)
+
+
+In the first task, we will analyze the data set \textit{chickwts}, which consists of two features: the weight of the chicks and their diet (\textit{feed}). The second of them takes 6 categorical variables. Let's denote the set of categorical variables: $D=\{horsebean, linseed , soybean, sunflower, meatmeal, casein\}$. Below, we will check whether diet affects the weight of the chicks, i.e., using significance level $\alpha=0.05$, we will test the hypotheses:
+$$H_0: \forall_{d\in D}\forall_{f\in D:f\neq d\text{  }} \mu_d = \mu_{f} \qquad H_1: \exists_{d\in D}\exists_{f\in D:f\neq d\text{  }} \mu_d \neq \mu_{f},$$
+where $\mu_{i}$ means the average of weight of chickens with the $i$ diet. 
+By testing the above hypotheses we will check whether the average weights of the chickens for each class of the \textit{feed} feature are the same.
+
+## 1.1 One-way ANOVA
+
+The one-way ANOVA model we can formulate as:
+$$y_{i,j}=\mu +\tau_j +\varepsilon_{i,j},$$
+where: $y_{i,j}$ is an observation, $\mu$ is the grand mean of the observations, $\tau_j=\mu_j-\mu$. $\mu_j$ is the weight mean for the $j$ category from $D$ and $\varepsilon_{i,j}$ are the random errors from the normal distribution with zero mean. The statistic that will help us decide which hypothesis is true is the $F$ statistic:
+$$F=\frac{\frac{1}{r-1}\sum_{i=1}^r n_i(\overline{x_i}-\tilde{x})^2}{\frac{1}{n-r}\sum_{i=1}^r\sum_{j=1}^{n_i}(x_{i,j}-\overline{x_i})^2},$$
+where $\overline{x_i}$ and $n_i$ is the average weight and number of chickens on the $i$ diet, respectively. The $\tilde{x}$ is the average weight of the chickens, $n$ is the number the chickens and $r=\#D$. In our case, under $H_0$, the $F$ has Fisher-Snedecor distribution with 5 and 65 degrees of freedom. We reject the $H_0$ when $F$ is equal or greater than $1-\alpha$ quantile of the F-distribution with 5 and 65 df. 
+
+In our case $F=15.365$ and value $p=5.936\cdot10^{-10}\text{ }(<0.05)$, which indicates that the null hypothesis is false.
+
+## 1.2 Test with semi-parametric bootstrap
+```{r q1t2, include=FALSE, cache=TRUE}
+
+SemiParametricBootstrap<- function(N=1000) {
+
+  lm.0 <- lm(weight ~ 1, data = chickwts)
+  e <- lm.0$residuals
+  B <- lm.0$coefficients
+  X <- lm.0 %>% model.matrix()
+  
+  replicate(N, {
+    e.boot <- sample(e, replace=T);
+    y.boot <- c(B %*% t(X) + e.boot);
+    anova.boot<- lm(y.boot ~ chickwts$feed) %>% anova();
+    anova.boot$`F value`[1]
+  })  -> F_stat.boot
+
+  (sum(F_stat.boot>= F_stat_observed)+1)/(N+1) -> boot_test.result
+  return(boot_test.result)
+}
+
+bootstrap_result <- SemiParametricBootstrap(1000)
+bootstrap_result
+# distribution of p-value
+# hist(bootstrap_result$`p-value`)
+# p_values - nearest 0, H_A is true, I guess
+#(1+sum(bootstrap_result$`F value` >= F_stat_observed))/ (1000+1) 
+```
+
+
+Let's test the previously defined test problem using semi-parametric bootstrap. First, let us assume that the null hypothesis is true, then one-way ANOVA model has form:
+$$y_{i,j} = \mu + \tau_{j} + \varepsilon_{i,j},$$
+where $\tau_j=0$ for all $j\in D$.
+The weight depends only on random errors, it doesn't depend on the diet(all means of weights depend on the diet are equal). 
+
+At the beginning of the iteration, let's resample the random errors and build a model on them. Then, let's calculate the $F$ statistic. Let's repeat the iteration 1000 times. The p-value estimate will be the fraction of obtained statistics that are greater than the observed $F$ statistic from Section 1.1. It is equal to 0.00099 (<0.05), so the null hypothesis is false.
+
+If the null hypothesis were true, resampling the random errors would not change the model significantly, and the values of obtained statistics would oscillate around the observed $F$ statistic.
+
+## 1.3 Permutation test
+
+In the permutation test, the main idea is that if $H_0$ is true, then a model based on the response vector $Y$ and the explanatory vector $X$ is not significantly different from a model built on $Y$ and a permutation of $X$. That is, in our case the models should give similar $F$ statistics if $H_0$ were true.
+
+Let's perform a permutation test. Firstly, during one iteration, let's resample (with: replacement=FALSE) the vector $X$ (i.e. the \textit{feed} column in the data frame \textit{chickwts} ), thus obtaining a permutation of $X$. Then let's build an ANOVA model based on the permutation of $X$ and the weights vector $Y$ and calculate the $F$ statistic. Let's repeat the iteration 1000 times and determine the fraction of obtained statistics that are greater than the observed $F$ statistic from section 1.1 (this will be an approximation of the p-value for the permutation test).
+
+As a result of the test, we got a p-value equal to 0.00099 (<0.05), which means that the null hypothesis is false.
+
+## 1.4 Estimator of $\theta=\mu_{sunflower}-\mu_{soybean}$
+
+
+Below we use parametric bootstrap to estimate the parameter $\theta=\mu_{sunflower}-\mu_{soybean}$ and determine its 95\% confidence interval. We know that the distribution of the estimator $\hat{\theta}$ is $N\left(\mu_{sunflower}-\mu_{soybean}, \frac{\sigma^2_{sunflower}}{12} + \frac{\sigma^2_{soybean}}{14} \right)$ (12-size of the sunflower class; 14-size of the soybean class). We don't know the parameters of that distribution $\hat{\mu}_{sunflower}$ and the $\hat{\mu}_{soybean}$. For this reason, we will simulate sample of weights and estimate $\theta$ based on them.
+
+During a single iteration, we will generate a sample of random variables from a normal distribution with mean equal to the sample mean of the class \textit{sunflower}, and variance equal to the sample variance of the same class. We will repeat a similar operation for the class \textit{soybean}. The generated samples will be of equal size as in the case of samples of the corresponding classes from the data set.
+Based on the generated samples, we will calculate the estimates of the means: $\hat{\mu}_{sunflower}$ and $\hat{\mu}_{sunflower}$, then we will calculate $\hat{\theta}^*$. Parametric bootstrap will consist in repeating this iteration 1000 times (we generate sample from a distribution).
+
+As a result of the simulation, we obtained 1000 estimates values of the $\theta$.
+The estimator of theta is the mean of the sample of the statistics $\hat{\theta}^*$. It equal to: $$\hat{\theta}=81.425.$$
+```{r q1t4, include=FALSE, cache=TRUE}
+# 4 --- CI with parametric bootstrap 
+# mle of mu and sigma
+
+K<- 1000
+set.seed(42)
+
+mu_sun<- chickwts[feed=="sunflower", .(mean(weight))]%>% unlist()
+sd_sun<- chickwts[feed=="sunflower", .(sd(weight))]%>% unlist()
+n_sun<- chickwts[feed=="sunflower", .N]%>% unlist()
+
+mu_soy<- chickwts[feed=="soybean", .(mean(weight))]%>% unlist()
+sd_soy<- chickwts[feed=="soybean", .(sd(weight))]%>% unlist()
+n_soy<- chickwts[feed=="soybean", .N]%>% unlist()
+
+theta_observed <- mu_sun - mu_soy
+
+mu_sun_boot <- replicate(K, rnorm(n_sun,
+                                 mu_sun,
+                                 sd_sun)) %>% colMeans()
+mu_soy_boot <- replicate(K, rnorm(n_soy,
+                                  mu_soy,
+                                  sd_soy)) %>% colMeans()
+
+theta.boot_sample <- mu_sun_boot - mu_soy_boot
+theta.boot_sample%>% hist()
+theta.boot_sample %>% mean() -> theta_hat
+theta_hat - qt(0.95, 24) * sqrt( sd_sun^2/n_sun + sd_soy^2/n_soy )
+theta_hat + qt(0.95, 24) * sqrt( sd_sun^2/n_sun + sd_soy^2/n_soy )
+# 90% C.I
+beta_hat <- mean(theta.boot_sample-theta_hat)
+nu_hat <- var(theta.boot_sample)
+
+theta_hat - beta_hat - qnorm(0.95) * sqrt(nu_hat)
+theta_hat - beta_hat + qnorm(0.95) * sqrt(nu_hat)
+
+```
+
+```{r q1t4 histogram of theta, fig.cap="The histogram of $\\hat{\\theta}$", echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, fig.height=2, cache=TRUE}
+theta.boot_sample %>% data.frame(V1=.) %>% 
+ggplot(aes(x=V1))+
+  geom_histogram(aes(y=..density..), color="black", fill="green")+
+  xlab(TeX("\\hat{\\theta}"))+
+  theme_bw()+
+  theme(aspect.ratio = 1)
+```
+
+The theoretical 90\% C.I has form:
+$$\left[\hat{\theta}-t_{0.95,24}\sqrt{\frac{\hat{\sigma}^2_{sunflower}}{12} + \frac{\hat{\sigma}^2_{soybean}}{14}}; \hat{\theta}+t_{0.95,24}\sqrt{\frac{\hat{\sigma}^2_{sunflower}}{12} + \frac{\hat{\sigma}^2_{soybean}}{14}}
+\right] = 
+[46.866; 115.985]$$
+The bootstrap 90\% C.I has form:
+$$\left[
+\hat{\theta}-\hat{\beta}+C_{0.05}\sqrt{\hat{\nu}};
+\hat{\theta}-\hat{\beta}+C_{0.95}\sqrt{\hat{\nu}}
+\right] = 
+[ 47.942; 114.908 ],
+$$
+where $\hat{\beta}$ is mean of $\hat{\theta}^*_b-\hat{\theta}$ and $\hat{\nu}$ is sample variance of the bootstrap sample of $\hat{\theta}^*$.
+
+
+
+# 2 Computers dataset (Question 2)
+
+
+In this section we will mainly focus on the bootstrap methods and their impact on statistical models based on \textit{Computers} dataset. Firstly, let's consider the linear model:
+$$Y_i = \beta_0 + \beta_1 X_i + \varepsilon_i,$$
+where $Y_i$ is the price of the $i$-th. computer (he variable \textit{price} in the dataset) in US dollars. The $X_i$ is the size of hard drive in MB of the $i$-th. computer (the variable \textit{hd} in the dataset).
+
+## 2.1 The OLS Model
+```{r q2t1,  include=FALSE, cache=TRUE}
+data("Computers") 
+names(Computers) 
+head(Computers)
+
+# task 1
+model.fit<- lm(price ~ hd, data=Computers)
+summary(model.fit)
+coef(model.fit)
+
+```
+
+
+At the beginning, we will start by estimating the above model using the OLS classical OLS approach. The estimated model has form:
+\begin{equation}\label{eqn:model_q2t2}
+\hat{Y}_i = 1816.9176 + 0.9665\cdot X_i + \varepsilon^*.\tag{$*$}
+\end{equation}
+
+
+## 2.2 Estimation of prediction error
+```{r, include=FALSE, cache=TRUE}
+# task 2
+price_predicted <- predict(model.fit)
+MSE <- mean((price_predicted-Computers$price)^2)
+RMSE <- sqrt(MSE)
+```
+
+
+We call the difference $Y_i - \hat{Y}_i$ the prediction error. However, in our dataset we have a vector $\underline{Y}$ with 6259 observations, so to measure the prediction error we will use the MSE measure (Mean Squared Error):
+$$MSE=\frac{1}{6259}\sum_{i=1}^{6259} \left( Y_i - \hat{Y}_i  \right)^2.$$
+The second measure of the prediction error is RMSE:
+$$RMSE=\sqrt{MSE}.$$ We will use both measures to measure the prediction error.
+
+The MSE of the (\ref{eqn:model_q2t2}) model is equal to 274841.6 and RMSE is equal to 524.2534.
+
+## 2.3 Cross validation
+
+```{r q2t3, include=FALSE, cache=TRUE}
+# task3
+n<- dim(Computers)[1]
+set.seed(42)
+folds <- createFolds(Computers$price, k=10)
+cv.price_predicted <- numeric(n)
+for (I in folds) {
+  m<- lm(price~hd, data=Computers[-I,])
+  cv.price_predicted[I]<- predict(m, Computers[I, ])
+}
+MSE.cv<- mean((cv.price_predicted-Computers$price)^2)
+RMSE.cv <- sqrt(MSE.cv)
+```
+Let's check what values of the above measures we will obtain using a 10 fold cross validation and compare them with the previous results. 
+
+First, let's divide our set of observations into 10 subsets of the same size. In one iteration, let's fit the OLS model to the set that is the sum of 9 subsets (train set) and determine the prediction of observations from the remaining 1 subset. We will repeat the iterations 10 times, but in such a way that each of the subsets is a test set. We will calculate MSE and RMSE based on the predicted values of $Y_i$ obtained during cross validation.
+
+The result of this experiment is:
+
+  + MSE=274964.1,
+  + RMSE=524.3702.
+  
+We can notice that the values of the measures are higher compared to the previous task (Q2.2). The reason for this is that when using cross validation, we trained and tested the models on two different datasets. In the previous task, we trained and tested the model on the same dataset. The idea of the cross validation is better because it avoids overfitting the model to the data.
+
+## 2.4 Leave-one-out cross validdation
+
+```{r q2t4, include=FALSE, cache=TRUE}
+# task 4
+sapply(1:n, function(i){
+  m<- lm(price~hd, Computers[-i,])
+  coef(m)[2]
+} ) -> beta_1.loo_cv
+
+beta_1.loo_cv %<>% data.frame(b=., x=Computers$price)
+```
+
+Let's take a closer look at how the selection of the training set affects the model. For this purpose, we will use the leave-one-out cross validation. This is cross validation in which the number of folds is equal to the number of observations, in our case it is equal to 6259. 
+
+In each iteration, we will build the model on 6258 observations and determine its slope. As a result, we will get 6259 slopes. We can see on the plot below, that each of them oscillates around the slope from task 1 (Q2.1).
+
+```{r q2t4 plt,  fig.cap="Slope values for the LOO CV", echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, fig.height=2.5, cache=TRUE}
+
+ggplot(beta_1.loo_cv, aes(y=b, x=x))+
+  geom_point(shape=1, col="blue", alpha=0.5)+
+  theme_bw()+
+  theme(aspect.ratio = 1)+
+  geom_hline(yintercept=coef(model.fit)[2])+
+  ylab(TeX("$\\hat{\\beta}_1$"))+
+  xlab("price")
+```
+
+## 2.5 Bootstrap procedure for the predicted values
+```{r q2t5, include=FALSE, cache=TRUE}
+N<- 1000
+sapply(1:N, function(i){
+  id<- sample(1:n, n, replace=TRUE)
+  m<- lm(price~hd, data = Computers[id,])
+  predict(m, newdata = Computers)
+}, simplify = T) -> price.boot
+
+sapply(1:n, function(i){
+  quantile(price.boot[i,], probs = c(.025, .975))
+}, simplify = T) %>% t() %>% cbind( Computers[, c("price", "hd")]) -> boot_result
+
+```
+
+
+Using bootstrap methods we can also estimate the predicted values (regression line) of the model.
+However, our main goal will be to find the 95% confidence interval of the regression line.
+
+As we know, non parametric bootstrap involves drawing data with replacement. During one iteration, we will draw a sample with replacement from the data set \textit{Computers}. On the obtained sample, we will train the model, and then use it to predict the set of the entire set \textit{Compuers}. We will repeat the iteration 1000 times, as a result of which we will receive 1000 predictions of each value of $Y_i$ - price. For each of them, we will determine 95\% C.I.
+Where the lower 95\% bound of the estimated value of $Y_i$ will be the 0.025 quantile of the obtained sample prediction of this value, and the upper bound of the interval will be the 0.975 quantile.
+The boundaries of the obtained intervals should create separate lines that will define the 95\% prediction area of the \textit{price} variable.
+
+
+```{r q2t5 plt,  fig.cap="95\\% C.I of the model regression line", echo=FALSE, warning=FALSE, error=FALSE, message=FALSE,  cache=TRUE}
+
+ggplot(boot_result, aes(x=hd, y=price))+
+  geom_point(aes(y=price), shape=1, col="green", alpha=0.3)+
+  geom_path((aes(y=`2.5%`)), color="blue")+
+  geom_path(aes(y=`97.5%`), color="blue")+
+  geom_path(aes(y=price_predicted), color="red")+
+  theme_bw()
+```
+
+The above graph shows the result of our bootstrap. The red line indicates the regression line from the first task (Q2.1), and the blue lines outline its 95\% C.I.
+
+
+# 3 Computers dataset - cont. (Question 3)
+
+In this section, we will mainly analyze the standard deviations of the model coefficients. For this purpose, we will use the non parametric bootstrap method.
+
+## 3.1 95\% C.I for $SE(\hat\beta_0)$ and $SE(\hat\beta_1)$
+
+```{r q3t1, include=FALSE, cache=TRUE}
+#### Q3
+
+#task 1
+set.seed(42)
+sapply(1:N, function(i){
+  id<- sample(1:n, n, replace=TRUE)
+  m<- lm(price~hd, data = Computers[id,])
+  summary(m)->s
+  s$coefficients[,2]
+}, simplify = T) %>% t() %>% as.data.frame() -> beta_se.boot
+
+quantile(beta_se.boot$`(Intercept)`, probs=c(0.025,0.975)) 
+quantile(beta_se.boot$hd, probs=c(0.025,0.975))
+
+```
+
+
+
+Let's use nonparametric bootstrap to estimate 95% confidence intervals of the standard deviations of the model coefficients. We will do this by repeating the iteration 1000 times. The iteration will consist of drawing a sample of size 6259, with replacement from the \textit{Computers} dataset. Then we will fit a linear model to it (similarly to the previous section) and determine the standard deviations of the estimated coefficients: $SE(\hat\beta_0)$, $SE(\hat\beta_1)$.
+As a result of the experiment, we will obtain two samples of size 1000 of the sought statistics.
+The estimates of the 95% confidence intervals will be the 95% quantile C.I.
+
+As a result of the above we get:
+
+  + $SE(\hat\beta_0)\in [12.2358, 12.9252];$
+  + $SE(\hat\beta_1)\in [0.0248, 0.0266].$
+  
+Their lengths are 0.6894 and 0.0018, respectively.
+
+## 3.2 Influence of the observations, for which the hard drive size is larger than 2000 MB
+
+Let's check what is the influence of the observations having the disk size larger than 2000 MB, on the 
+$SE(\hat\beta_0)$ and $SE(\hat\beta_1)$.
+
+First, perform the same experiment as in problem (Q3.1), but with the difference that we remove from the \textit{Computers} dataset the observations that have a disk larger than 2000 MB. As a result, we will get two new samples of size 1000 of the $SE(\hat\beta_0^*)$ and $SE(\hat\beta_1^*)$. Additionally, we estimate the coefficients of the regression line.
+
+If the observations we consider in this problem have a significant impact on the model, then the empirical distributions of the obtained statistics should be different. 
+
+```{r q3t2, include=FALSE, cache=TRUE}
+comp_hd_leq2000 <- Computers[Computers$hd<2000, ]
+m<- lm(price~hd, data = comp_hd_leq2000)
+summary(m) -> s
+s$coefficients
+
+n_new <- dim(comp_hd_leq2000)[1]
+set.seed(42)
+sapply(1:N, function(i){
+  id<- sample(1:n_new, n_new, replace=TRUE)
+  m<- lm(price~hd, data = comp_hd_leq2000[id,])
+  summary(m)->s
+  c(s$coefficients[,1],  s$coefficients[,2])
+}, simplify = T) %>% t() %>% as.data.frame() -> coef_new
+
+coef_new[,1:2] %>% colMeans()
+
+coef_new[,3:4]-> beta_se_new.boot
+
+quantile(beta_se_new.boot$`(Intercept)`, probs=c(0.025,0.975)) 
+quantile(beta_se_new.boot$hd, probs=c(0.025,0.975))
+
+```
+We got estimated coefficients:
+
+  + $\hat\beta_0^* = 1815.1597$
+  + $\hat\beta_1^* = 0.9711$
+
+As we can see, the coefficients have not changed significantly compared to the model from task Q2.2.
+We got quantile 95\% C.I:
+
+  + $SE(\hat\beta_0^*)\in [12.3069, 12.9746]$, length: 0.6677;
+  + $SE(\hat\beta_1^*)\in[0.0251, 0.0267  ]$, length: 0.0016.
+  
+Removing the considered observations caused the confidence intervals to narrow slightly.
+The graphs below (pink corresponds to the results from Q3.1 and blue to the results from Q3.2) prove that the results from the two tasks are not significantly different, which proves that the considered observations do not have a significant impact on the models.
+
+```{r q3t2 plt prepare,  include=FALSE, cache=TRUE}
+
+cbind(beta_se.boot, task=rep("Q3.1"))->a
+cbind(beta_se_new.boot, task=rep("Q3.2"))->b
+df<- rbind(a,b)
+
+leg <- get_legend(ggplot(df, aes(x=`(Intercept)`, fill = task))+
+  geom_histogram( alpha=0.4, position = "identity", col="black")+
+  theme_bw()+
+  xlab(TeX("SE(\\hat{\\beta}\\_0)"))+
+  scale_x_continuous(limits = c(12,13.2),
+                     breaks = seq(12,13.2, by=0.25))+
+  theme(legend.position = "bottom"))
+
+ggplot(df, aes(x=`(Intercept)`, fill = task))+
+  geom_histogram( alpha=0.4, position = "identity", col="black")+
+  theme_bw()+
+  xlab(TeX("SE(\\hat{\\beta}\\_0)"))+
+  scale_x_continuous(limits = c(12,13.2),
+                     breaks = seq(12,13.2, by=0.25))+
+  theme(legend.position = "none")->p1
+
+ggplot(df, aes(x=`(Intercept)`, fill = task))+
+  geom_boxplot(alpha=0.4)+
+  theme_bw()+
+  xlab(TeX("SE(\\hat{\\beta}\\_0)"))+
+  scale_x_continuous(limits = c(12,13.2),
+                     breaks = seq(12,13.2, by=0.25))+
+  scale_y_continuous(breaks=NULL)+
+  theme(legend.position = "none")-> p2
+
+ggplot(df, aes(x=hd, fill = task))+
+  geom_histogram( alpha=0.4, position = "identity", col="black")+
+  theme_bw()+
+  xlab(TeX("SE(\\hat{\\beta}\\_1)"))+
+  scale_x_continuous(limits = c(0.0235,0.0282),
+                     breaks = seq(0.025,0.027, by=0.001))+
+  theme(legend.position = "none") ->p3
+
+ggplot(df, aes(x=hd, fill = task))+
+  geom_boxplot(alpha=0.4)+
+  theme_bw()+
+  xlab(TeX("SE(\\hat{\\beta}\\_1)"))+
+  scale_x_continuous(limits = c(0.0235,0.0282),
+                     breaks = seq(0.025,0.027, by=0.001))+
+  scale_y_continuous(breaks=NULL)+
+  theme(legend.position = "none") -> p4
+
+# (p1/p2) +
+#   plot_layout(guides="collect")+
+#   theme(plot.margin = margin(5,5,5,5)) -> t1
+# (p3/p4) +
+#   plot_layout(guides="collect")+
+#   theme(plot.margin = margin(5,5,5,5)) -> t2
+
+```
+```{r t1,  fig.cap="Histogram and boxplot of the $SE(\\hat\\beta_0)$", echo=FALSE, warning=FALSE, error=FALSE, message=FALSE,  cache=TRUE}
+plot_grid(p1,p2,ncol=1, align="v", rel_heights = c(3,2,0.5)) %>% plot_grid(., plot_grid(p3, p4,ncol=1, align="v", rel_heights = c(3,2,0.5)) + theme(legend.position = "bottom"), ncol=2)
+```
+
+
+# 4
+
+We consider a sample of 20 observation with mean $\mu.$
+  
+```{r, cache=TRUE, include=FALSE}
+B<- 1000
+x<-c(0.68446806,-0.02596037,-0.90015774,0.72892605,-0.45612255, 0.19311847,
+     -0.13297109, -0.99845382, 0.37278006, -0.20371894, -0.15468803, 0.19298230
+     , -0.42755534, -0.04704525, 0.15273726, 0.03655799, 0.01315016, -0.59121428,
+     4.50955771, 2.87272653)
+
+vec_mean = mean(x)
+vec_median = median(x)
+```
+
+## 4.1
+
+Below there are values of estimated mean and median.
+
+|     | mean | median |
+|-----|------|--------|
+|value|`r round(vec_mean, 4)`|`r round(vec_median, 4)`|
+  
+## 4.2
+
+To have a closer look at the data we want to approximate sample mean's and median's distribution using non parametric bootstrap.
+
+```{r, fig.height=2.5,include =FALSE}
+n <- length(x)
+
+boot.means <- replicate(B, mean(sample(x, n, replace = TRUE)))
+boot.medians <- replicate(B, median(sample(x, n, replace = TRUE)))
+
+boot.means.df <- data.frame(x = boot.means)
+boot.medians.df <- data.frame(x = boot.medians)
+
+mean_plot <- ggplot(boot.means.df, aes(x = x)) +  
+  geom_histogram(binwidth = 0.05, fill = 'dodgerblue', alpha = 0.7) +
+  labs(title = 'Bootstrap mean',
+       x = 'value') +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+median_plot <- ggplot(boot.medians.df, aes(x = x)) +  
+  geom_histogram(binwidth = 0.06, fill = 'darkgreen', alpha = 0.7) +
+  labs(title = 'Bootstrap median',
+       x = 'value') +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+```{r, fig.height=2.5, echo=FALSE}
+grid.arrange(mean_plot, median_plot, ncol = 2)
+```
+
+By looking at above plots we can notice that the mean's distribution recalls normal distribution, that agrees with Central Limit Theorem. However, we cannot tell the same for median's distribution - it is more peaked due to the presence of outliers.
+
+## 4.3
+
+The next step to explore the mean and median is estimating the standard error of the sample and calculating 95% confidence intervals for the sample mean and median. We use a semi parametric bootstrap to do that.
+
+With regard to use semi parametric bootstrap we need to estimate the error term by residuals and bootstrap them, next just fit the model. In our case we as a model consider the measure - mean or median and focus on their's residuals. The process was following: we sampled the residuals with replacement and added it to the mean of the vector. Next, we calculated mean/median of given vector. After replication of the experiment 10000 times we could calculate SE and 95% confidence intervals.
+
+```{r, fig.height=2.5, include=FALSE,  echo=FALSE}
+
+mean.boot <- rep(0, B)
+median.boot <- rep(0, B)
+
+residual <- x - vec_mean
+  
+for (i in 1:B){
+  residual.boot <- sample(residual, size = n, replace = TRUE)
+  x.boot <- vec_mean + residual.boot
+  
+  mean.boot[i] <- mean(x.boot)
+  median.boot[i] <- median(x.boot)
+}
+
+se_mean <- sd(mean.boot); se_median <- sd(median.boot)
+
+ci_mean <- quantile(mean.boot, c(0.025, 0.975))
+ci_median <- quantile(median.boot, c(0.025, 0.975))
+```
+
+|     | mean | median |
+|-----|------|--------|
+|orig|`r round(vec_mean, 4)`|`r round(vec_median, 4)`|
+|SE|`r round(se_mean, 4)`|`r round(se_median, 4)`|
+|CI lower|`r round(ci_mean[[1]], 4)`|`r round(ci_median[[1]], 4)`|
+|CI upper|`r round(ci_mean[[2]], 4)`|`r round(ci_median[[2]], 4)`|
+
+The SE is big for both measures, that indicates that confidence intervals are also wide. It is caused by the presence of outliers. The mean's CI is wider that median's due to the chosen method.
+
+## 4.4
+
+Now, we will estimate mean squared error for the mean and median using jackknife procedure. This method bases on leaving out one observation from the observed sample. Then the $i$-th jackknife sample is given by 
+$$\hat\theta^{-(i)} = \frac{1}{n-1} \sum_{j, j\neq i} x_j,$$
+then the jackknife estimate for the mean is 
+$$\hat\theta^{(.)} = \frac{1}{n} \sum_{i} \hat\theta^{(-i)}.$$
+After calculating the mean's estimate we need to calculate it's bias and variance
+$$MSE = Var + Bias^2.$$
+We used following formulas
+$$Bias(\hat\theta) = (n-1)(\hat\theta_{est} - \mu),$$
+$$Var(\hat\theta) = \frac{(n-1)}{n}\sum_{i=1}^n(\hat\theta_{(i)} - \hat\theta_{est})^2.$$
+Similar calculations was made for the median.
+
+```{r, echo=FALSE, include=FALSE}
+
+mean.jackknife <- rep(0, B)
+median.jackknife <- rep(0, B)
+  
+for (i in 1:n){
+  x.jack <- x[- c(i)]
+  mean.jackknife[i] <- mean(x.jack)
+  median.jackknife[i] <- median(x.jack)
+}
+
+mean.jackknife.est <- mean(mean.jackknife)
+median.jackknife.est <- mean(median.jackknife)
+
+mean.bias <- (n - 1) * (mean.jackknife.est - vec_mean)
+median.bias <- (n - 1) * (median.jackknife.est - vec_mean)
+
+mean.var <- (n - 1) / n * sum((mean.jackknife - mean.jackknife.est)^2)
+median.var <- (n - 1) / n * sum((median.jackknife - median.jackknife.est)^2)
+
+mean.mse <- mean.var + mean.bias^2
+median.mse <- median.var + median.bias^2
+```
+
+|     | mean | median |
+|-----|------|--------|
+|MSE|`r round(mean.mse, 4)`|`r round(median.mse, 4)`|
+
+Median has smaller MSE due to the existence of outliers in dataset. Then median is preferred estimator. 
+
+## 4.5
+
+Let $M$ be the median and $\pi_{M<0} = P(M<0).$ We would like to estimate the distribution of $\hat{\pi}_{M<0}$ and constrict 95% confidence interval for $\pi_{M<0}.$ To do that we will perform non parametric bootstrapping (sample with replacement) with 10000 replications, calculate probability $\pi_{M<0}$ and again replicate the procedure 10000 times to determine CI using quantiles.
+
+```{r, fig.height=2.5, include=FALSE,  echo=FALSE}
+bootstrap_medians <- rep(0, B)
+bootstrap_M0 = rep(0, B)
+
+for (j in 1:B){
+  for (i in 1:B) {
+    bootstrap_medians[i] <- mean(median(sample(x, size = n, replace = TRUE)) < 0)
+  }
+  bootstrap_M0[j] <- mean(bootstrap_medians)
+}
+
+pi_hat <- mean(bootstrap_M0)
+
+ci <- quantile(bootstrap_M0, probs = c(0.025, 0.975))
+
+pi_df <- data.frame(x = bootstrap_M0)
+```
+
+
+```{r, fig.height=2.5,echo=FALSE}
+ggplot(pi_df, aes(x = x)) +  
+  geom_histogram(binwidth = 0.002, fill = 'dodgerblue', alpha = 0.7) +
+  geom_vline(xintercept = ci[[1]], color = 'red') +
+  geom_vline(xintercept = ci[[2]], color = 'red') + 
+  geom_vline(xintercept = pi_hat, color = 'darkgreen') + 
+  labs(title = 'M > 0 bootstrap',
+       x = 'value') +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+The estimated $\pi_{M>0}=$ `r round(pi_hat, 4)` with confidence interval [`r round(ci[[1]], 4)`, `r round(ci[[2]], 4)`]. The probability of $M <0$ is greater of $1/2,$ but close to it. That indicates that most of the observations in $x$ is smaller than $0$. The confidence interval includes $1/2$ then we cannot say that the difference between positive and negative observations is significant.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
